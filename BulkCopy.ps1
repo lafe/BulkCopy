@@ -166,11 +166,16 @@ if ($projectFile) {
         $verifiedRecords = Import-Csv -Path $projectFile
     } else {
         $verifiedRecords = @()
+        # Create a CSV file with a header row so that subsequent appends include proper columns.
+        "RelativePath,Size,LastWriteTime,Hash" | Out-File -FilePath $projectFile
     }
 }
 else {
     $verifiedRecords = @()
 }
+
+# Ensure $verifiedRecords is an array.
+$verifiedRecords = @($verifiedRecords)
 
 # Begin file verification loop
 $total = $sourceFiles.Count
@@ -218,14 +223,14 @@ for ($i = 0; $i -lt $total; $i++) {
             Write-Host -ForegroundColor Green "[SUCCESS] Verified $relativePath"
             # Immediately update the project file with verified details.
             if ($projectFile) {
-                $verifiedRecords = $verifiedRecords | Where-Object { $_.RelativePath -ne $relativePath }
-                $verifiedRecords += [PSCustomObject]@{
+                $newVerifiedRecord = [PSCustomObject]@{
                     RelativePath  = $relativePath
                     Size          = $file.Length
                     LastWriteTime = $file.LastWriteTime.ToString("s")
                     Hash          = $srcHash
                 }
-                $verifiedRecords | Export-Csv -Path $projectFile -NoTypeInformation
+                $verifiedRecords = $verifiedRecords + ,$newVerifiedRecord
+                $newVerifiedRecord | Export-Csv -Path $projectFile -NoTypeInformation -Append
             }
         }
     }
