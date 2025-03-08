@@ -6,6 +6,7 @@
     This script:
       - Accepts source and destination folder paths.
       - Optionally accepts a project name to track verified files.
+      - Optionally accepts parameters for the number of retries and wait time on robocopy errors.
       - Creates the destination folder if it doesn’t exist. If it exists, it warns and prompts for confirmation (resume, verify only, or abort).
       - Uses robocopy (with /E and /COPYALL) to copy all files/subfolders while logging operations.
       - Verifies each file by comparing MD5 hashes of the source and destination.
@@ -22,6 +23,12 @@
     (Optional) A simple name used to create a project file (e.g., "MyProject" becomes `projects\MyProject.csv`) that tracks verified file details.
     When provided, the script will skip verifying files that have not changed since their last verification.
 
+.PARAMETER Retries
+    (Optional) The number of retries for robocopy errors. Default is 5.
+
+.PARAMETER Wait
+    (Optional) The wait time in seconds between retries. Default is 3 (seconds).
+
 .EXAMPLE
     .\BulkCopy.ps1 -Source "C:\Path\To\Source" -Destination "D:\Path\To\Destination" -Project "MyProject"
     This creates a project file at 'projects\MyProject.csv'.
@@ -35,7 +42,13 @@ param(
     [string]$Destination,
 
     [Parameter(Mandatory = $false)]
-    [string]$Project
+    [string]$Project,
+
+    [Parameter(Mandatory = $false)]
+    [int]$Retries = 5,
+
+    [Parameter(Mandatory = $false)]
+    [int]$Wait = 3
 )
 
 # Check parameters and existence of source folder
@@ -46,7 +59,7 @@ if (-not (Test-Path -Path $Source)) {
 
 # If destination exists, warn and ask for confirmation (overwrite)
 if (Test-Path $Destination) {
-    Write-Warning "WARNING: Destination folder '$Destination' already exists. This may be a previous unsuccessful backup from '$Source'."
+    Write-Warning "Destination folder '$Destination' already exists. This may be a previous unsuccessful backup from '$Source'."
     $valid = $false
     do {
         Write-Host "Press R to Resume backup (robocopy & verify), V to Verify only, A to Abort:" -NoNewline
@@ -116,8 +129,11 @@ $robocopyArgs = @(
     "`"$Destination`"",
     "/E",           # Copy all subdirectories including empty ones.
     "/COPYALL",     # Copy all file info.
-    "/R:25",        # Retry 25 times on failure.
-    "/W:5",         # Wait 5 seconds between retries.
+    "/XJ",          # Exclude junction points.
+    "/XJD",         # Exclude directory junctions.
+    "/XJF",         # Exclude file junctions.
+    "/R:$Retries",   # Configurable retries
+    "/W:$Wait",      # Configurable wait time
     "/TEE",         # Output to console and log file.
     "/LOG:`"$robocopyLog`""  # Log file.
 )
@@ -177,6 +193,12 @@ else {
 # Ensure $verifiedRecords is an array.
 $verifiedRecords = @($verifiedRecords)
 
+# Create a dictionary for fast lookup.
+$verifiedDict = @{}
+foreach ($rec in $verifiedRecords) {
+    $verifiedDict[$rec.RelativePath] = $rec
+}
+
 # Begin file verification loop
 $total = $sourceFiles.Count
 for ($i = 0; $i -lt $total; $i++) {
@@ -186,23 +208,21 @@ for ($i = 0; $i -lt $total; $i++) {
                    -Status "Processing file $counter of $total" `
                    -PercentComplete (($counter / $total) * 100)
 
-    Write-Host -ForegroundColor Gray "Verifying file: $($file.FullName)"
-    
     # Get relative path
     $relativePath = $file.FullName.Substring($sourceBase.Length)
     $destFile = Join-Path $Destination $relativePath
 
     # If project file is specified, check if file is already verified
-    if ($projectFile) {
-        $record = $verifiedRecords | Where-Object { $_.RelativePath -eq $relativePath }
-        if ($record) {
-            if (($file.Length -eq [int64]$record.Size) -and ($file.LastWriteTime.ToString("s") -eq $record.LastWriteTime)) {
-                Write-Host -ForegroundColor Cyan "Skipping already verified file: $relativePath"
-                Write-Host
-                continue
-            }
+    if ($projectFile -and $verifiedDict.ContainsKey($relativePath)) {
+        $record = $verifiedDict[$relativePath]
+        if (($file.Length -eq [int64]$record.Size) -and ($file.LastWriteTime.ToString("s") -eq $record.LastWriteTime)) {
+            # Write-Host -ForegroundColor Cyan "Skipping already verified file: $relativePath"
+            # Write-Host
+            continue
         }
     }
+
+    Write-Host -ForegroundColor Gray "Verifying file: $($file.FullName)"
 
     if (-not (Test-Path -LiteralPath $destFile)) {
         $msg = "Missing file: $relativePath"
@@ -211,8 +231,13 @@ for ($i = 0; $i -lt $total; $i++) {
         Write-Host -ForegroundColor Red "[ERROR] $msg"
     }
     else {
+        # Measure hashing time
+        $hashStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         $srcHash = (Get-FileHash -Path $file.FullName -Algorithm MD5).Hash
         $destHash = (Get-FileHash -Path $destFile -Algorithm MD5).Hash
+        $hashStopwatch.Stop()
+        Write-Host "Hashing took: $($hashStopwatch.Elapsed.TotalMilliseconds) ms"
+
         if ($srcHash -ne $destHash) {
             $msg = "Hash mismatch: $destFile"
             $errors += $msg
@@ -223,14 +248,19 @@ for ($i = 0; $i -lt $total; $i++) {
             Write-Host -ForegroundColor Green "[SUCCESS] Verified $relativePath"
             # Immediately update the project file with verified details.
             if ($projectFile) {
+                $csvStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
                 $newVerifiedRecord = [PSCustomObject]@{
                     RelativePath  = $relativePath
                     Size          = $file.Length
                     LastWriteTime = $file.LastWriteTime.ToString("s")
                     Hash          = $srcHash
                 }
-                $verifiedRecords = $verifiedRecords + ,$newVerifiedRecord
+                # Update the dictionary for fast lookup.
+                $verifiedDict[$relativePath] = $newVerifiedRecord
+                # Append the new record to the project CSV.
                 $newVerifiedRecord | Export-Csv -Path $projectFile -NoTypeInformation -Append
+                $csvStopwatch.Stop()
+                Write-Host "CSV update took: $($csvStopwatch.Elapsed.TotalMilliseconds) ms"
             }
         }
     }

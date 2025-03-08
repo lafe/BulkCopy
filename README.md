@@ -22,6 +22,8 @@ MD5 was chosen because it is a fast, built-in hash algorithm that efficiently ch
 - **Source**: The folder to be cloned.
 - **Destination**: The folder where files will be copied to.
 - **Project** (optional): A simple name used to generate a project file (e.g., "MyProject" becomes `projects\MyProject.csv`) that records verified file details. When provided, the script will skip verifying files that have not changed since their last verification.
+- **Retries** (optional): The number of retries for robocopy errors. Default is 5.
+- **Wait** (optional): The wait time in seconds between retries. Default is 3.
 
 ## Usage
 
@@ -36,6 +38,20 @@ If the destination folder exists, you will be prompted to:
 - Press **R** to resume backup (perform robocopy and verification).
 - Press **V** to verify only.
 - Press **A** to abort the operation.
+
+## Robocopy Commands
+
+The script constructs a robocopy command with the following options:
+
+- **/E**: Copies all subdirectories including empty ones.
+- **/COPYALL**: Copies all file information (data, attributes, timestamps, security info, etc.).
+- **/XJ**: Excludes junction points.
+- **/XJD**: Excludes directory junctions.
+- **/XJF**: Excludes file junctions.
+
+These options ensure that only the actual files and directories are copied, while symlinks and junctions are deliberately omitted.
+
+Additionally, the `/R` and `/W` parameters allow configurable retry behavior on errors. These parameters are set to the values provided by the user or default to 5 retries with a 3-second wait.
 
 ## Logs and Reports
 
